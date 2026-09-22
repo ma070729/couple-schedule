@@ -360,6 +360,25 @@ function toast(msg, ms){
   $('#toastWrap').appendChild(el);
   setTimeout(() => el.remove(), ms || 2000);
 }
+// 统一的"保存文件"出口：
+//  - 手机 App（WebView 壳）里走原生接口，写进系统「下载」目录（WebView 不支持 blob: 下载）
+//  - 浏览器里就是普通下载
+function saveBlob(blob, name){
+  if(window.AndroidBridge && window.AndroidBridge.saveBase64){
+    const fr = new FileReader();
+    fr.onload = () => {
+      try{ window.AndroidBridge.saveBase64(name, String(fr.result).split(',')[1]); }
+      catch(e){ toast('保存失败：' + e.message); }
+    };
+    fr.readAsDataURL(blob);
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+}
 function todayDay(){ const d = new Date().getDay(); return d === 0 || d === 6 ? 0 : d; } // 0=非工作日
 function pad2(n){ return n < 10 ? '0' + n : '' + n; }
 
@@ -1496,10 +1515,7 @@ function openSyncPanel(){
   });
 }
 function downloadText(text, name){
-  const blob = new Blob([text], { type:'text/plain;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  saveBlob(new Blob([text], { type:'text/plain;charset=utf-8' }), name);
 }
 // 解析同步包 → 变更通知弹窗（接受 / 拒绝）
 async function handleImportPackage(raw){
@@ -2092,7 +2108,8 @@ async function exportExcel(which){
     ws2['!cols'] = [{ wch:10 }, { wch:24 }, { wch:8 }, { wch:11 }, { wch:13 }, { wch:14 }, { wch:10 }, { wch:12 }, { wch:16 }];
     XLSX.utils.book_append_sheet(wb, ws1, '课表网格');
     XLSX.utils.book_append_sheet(wb, ws2, '课程清单');
-    XLSX.writeFile(wb, fileName);
+    const buf = XLSX.write(wb, { bookType:'xlsx', type:'array' });   // 自己保存，兼容 App 内的 WebView
+    saveBlob(new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), fileName);
     toast('已导出：' + fileName);
   }catch(e){
     toast('导出失败，已改为导出 CSV');
@@ -2101,10 +2118,7 @@ async function exportExcel(which){
 }
 function exportCSV(aoa, name){
   const csv = aoa.map(r => r.map(v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"').join(',')).join('\r\n');
-  const blob = new Blob(['\ufeff' + csv], { type:'text/csv;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  saveBlob(new Blob(['\ufeff' + csv], { type:'text/csv;charset=utf-8' }), name);
 }
 function openExport(){
   const n = k => (k === 'mine' ? state.mine : state.partner).length;
@@ -2172,10 +2186,8 @@ function openSetting(){
       };
       $('#stBackup', root).onclick = () => {
         const data = { v:1, mine:state.mine, partner:state.partner, settings:state.settings, pair:{ code:state.pair.code }, at:Date.now() };
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type:'application/json' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob); a.download = '情侣课表备份-' + new Date().toISOString().slice(0, 10) + '.json'; a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+        saveBlob(new Blob([JSON.stringify(data, null, 2)], { type:'application/json' }),
+                 '情侣课表备份-' + new Date().toISOString().slice(0, 10) + '.json');
       };
       $('#stRestore', root).onclick = () => {
         const inp = document.createElement('input');

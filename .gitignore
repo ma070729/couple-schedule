@@ -1,9 +1,11 @@
-# 只保留源码与自检脚本，截图等本地产物不入库
+# 只保留源码与自检脚本，截图、真实课表样本等本地产物不入库
 _selftest/*.png
+_selftest/real-schedule.*
+_selftest/*.xls
+_selftest/*.xlsx
+android/build/
+android/android.keystore
 node_modules/
 *.log
 .DS_Store
 Thumbs.db
-_selftest/real-schedule.*
-_selftest/*.xls
-_selftest/*.xlsx
