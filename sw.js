@@ -1,5 +1,5 @@
 /* 情侣课表 Service Worker：静态资源预缓存 + 离线可用（纯前端，无后端） */
-const CACHE = 'couple-schedule-v1';
+const CACHE = 'couple-schedule-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -28,26 +28,24 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (url.origin !== location.origin) {
-    // CDN（SheetJS / ical.js）走"缓存优先 + 后台更新"
-    e.respondWith(
-      caches.match(req).then(hit => {
-        const net = fetch(req).then(res => {
+
+  // 统一的"缓存优先 + 后台更新"：第二次打开几乎瞬间出画面（弱网/海外线路尤其明显），
+  // 同时后台悄悄拉新版，下次打开就是最新的。
+  const staleWhileRevalidate = fallback =>
+    caches.match(req).then(hit => {
+      const net = fetch(req).then(res => {
+        if (res && (res.ok || res.type === 'opaque')) {
           const cp = res.clone();
           caches.open(CACHE).then(c => c.put(req, cp)).catch(() => {});
-          return res;
-        }).catch(() => hit);
-        return hit || net;
-      })
-    );
+        }
+        return res;
+      }).catch(() => hit || (fallback ? caches.match(fallback) : undefined));
+      return hit || net;
+    });
+
+  if (url.origin !== location.origin) {
+    e.respondWith(staleWhileRevalidate());          // CDN 的 xlsx / ical.js
     return;
   }
-  // 同源页面：网络优先，失败回落缓存（保证更新及时 + 离线可用）
-  e.respondWith(
-    fetch(req).then(res => {
-      const cp = res.clone();
-      caches.open(CACHE).then(c => c.put(req, cp)).catch(() => {});
-      return res;
-    }).catch(() => caches.match(req).then(hit => hit || caches.match('./index.html')))
-  );
+  e.respondWith(staleWhileRevalidate('./index.html'));   // 同源页面与图标
 });

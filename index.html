@@ -12,10 +12,11 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default" />
 <link rel="icon" href="icons/icon.svg" />
 <link rel="apple-touch-icon" href="icons/icon-192.png" />
-<!-- SheetJS：Excel 导出（CDN，defer 不阻塞首屏；离线/被墙时自动换源或降级导出 CSV） -->
-<script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-<!-- ical.js：ICS 解析兜底（内置解析器优先，仅在解析不到课程时启用） -->
-<script defer src="https://cdn.jsdelivr.net/npm/ical.js@1.5.0/build/ical.min.js"></script>
+<!--
+  首屏保持"零依赖"：SheetJS(xlsx,约900KB) 与 ical.js(约80KB) 都不在这里加载，
+  只在「导出 Excel」或内置解析器读不出 .ics 时按需拉取（见 CDN_LIST / ensureLib）。
+  这样首屏只下载这一个 HTML，手机流量网络下打开快很多。
+-->
 <style>
 /* ==================== 主题变量（马卡龙柔和配色） ==================== */
 :root{
@@ -1005,10 +1006,13 @@ function handleImport(type, root){
     const f = ($('#impFile', root) || {}).files;
     if(!f || !f[0]){ toast('请先选择 .ics 文件'); return; }
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       let res;
       try{ res = parseICS(reader.result); }
       catch(e){ console.error(e); toast('解析失败：' + e.message); return; }
+      if(!res.courses.length && await ensureLib('ICAL')){        // 内置解析器读不出 → 按需加载 ical.js 再试一次
+        try{ res = parseICS(reader.result); }catch(e){}
+      }
       if(!res.courses.length){ toast('没有解析到有效课程，请检查文件格式'); return; }
       if(!state.settings.termStart && res.termStart){ state.settings.termStart = res.termStart; save(); }
       openImportPreview(res.courses, side, 'ICS 文件');
