@@ -319,13 +319,15 @@ const ROWS = [
 const ROW_KEYS = ROWS.map(r => r.key);
 const DAYS = ['周一','周二','周三','周四','周五','周六','周日'];        // 周六日也可能有课
 const DAYS_SHORT = ['一','二','三','四','五','六','日'];
-// 显示几天：auto=有周末课就自动展开 7 天，否则 5 天
+// 显示几天：默认 7 天（周六周日一直显示）；可在设置里改成 5 天或自动
 function dayCount(){
-  const mode = state.settings.days || 'auto';
+  const mode = state.settings.days || '7';
   if(mode === '5') return 5;
-  if(mode === '7') return 7;
-  const hasWeekend = state.mine.some(c => Number(c.day) >= 6) || state.partner.some(c => Number(c.day) >= 6);
-  return hasWeekend ? 7 : 5;
+  if(mode === 'auto'){
+    const hasWeekend = state.mine.some(c => Number(c.day) >= 6) || state.partner.some(c => Number(c.day) >= 6);
+    return hasWeekend ? 7 : 5;
+  }
+  return 7;
 }
 // 节次序号(1~12) → 纵向行 key
 function nodeToRow(n){
@@ -405,7 +407,7 @@ function weeksText(spec){
 function inWeek(course, week){ return expandWeeks(course.weeks).indexOf(Number(week)) >= 0; }
 
 /* ---------------- 4. 全局状态 ---------------- */
-const DEFAULT_SETTINGS = { maxWeek:20, termStart:'', myName:'我', partnerName:'TA', days:'auto' };
+const DEFAULT_SETTINGS = { maxWeek:20, termStart:'', myName:'我', partnerName:'TA', days:'7' };
 let state = {
   mine:    LS.get('cs_mine', []),
   partner: LS.get('cs_partner', []),
@@ -2147,9 +2149,9 @@ function openSetting(){
       '</div>' +
       '<div class="field"><label>课表显示范围</label>' +
         '<select id="sDays">' +
-          '<option value="auto"' + ((state.settings.days || 'auto') === 'auto' ? ' selected' : '') + '>自动（有周六/周日的课就展开 7 天）</option>' +
-          '<option value="7"' + (state.settings.days === '7' ? ' selected' : '') + '>总是显示周一~周日（7 天）</option>' +
+          '<option value="7"' + (state.settings.days !== '5' && state.settings.days !== 'auto' ? ' selected' : '') + '>周一~周日都显示（7 天，推荐）</option>' +
           '<option value="5"' + (state.settings.days === '5' ? ' selected' : '') + '>只显示周一~周五（5 天）</option>' +
+          '<option value="auto"' + (state.settings.days === 'auto' ? ' selected' : '') + '>自动（有周六/周日的课才展开 7 天）</option>' +
         '</select>' +
         '<div class="hint">7 天模式下列会变窄，点课程卡片可以看完整信息。</div></div>' +
       '<div class="tip">开学日期用于计算 .ics 里每节课属于第几周，以及表头显示日期。</div>' +
@@ -2296,6 +2298,8 @@ $('#btnSetting').onclick = openSetting;
 })();
 
 /* 首次启动：数据规整 + 渲染 */
+// 老版本默认是"自动"，这个版本开始默认一直显示周六周日（只迁移一次，之后仍可在设置里改回）
+if(!state.settings.daysV2){ state.settings.days = '7'; state.settings.daysV2 = 1; }
 state.mine = (state.mine || []).map(c => normalizeCourse(c, 'mine'));
 state.partner = (state.partner || []).map(c => normalizeCourse(c, 'partner'));
 save();
