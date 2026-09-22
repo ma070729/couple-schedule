@@ -96,7 +96,7 @@ input,textarea,select{font-family:inherit;font-size:14px;color:var(--ink)}
 /* ==================== 课表网格 ==================== */
 .grid-wrap{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
 .grid-head{
-  display:grid;grid-template-columns:var(--time-w) repeat(5,minmax(0,1fr));
+  display:grid;grid-template-columns:var(--time-w) repeat(var(--days,5),minmax(0,1fr));
   position:sticky;top:0;z-index:6;background:#fff;border-bottom:1px solid var(--line);
   padding-top:env(safe-area-inset-top);
 }
@@ -105,7 +105,20 @@ input,textarea,select{font-family:inherit;font-size:14px;color:var(--ink)}
 .grid-head .th .d{display:block;font-size:10px;font-weight:600;color:#bda9b5;margin-top:1px}
 .grid-head .th .d.today-d{color:var(--pink)}
 .grid-head .th-time{font-size:10.5px;color:#c0aeb9;display:grid;place-items:center;font-weight:600}
-.grid-body{display:grid;grid-template-columns:var(--time-w) repeat(5,minmax(0,1fr))}
+.grid-body{display:grid;grid-template-columns:var(--time-w) repeat(var(--days,5),minmax(0,1fr))}
+/* 显示 7 天时整体收紧，保证手机上也能一屏放下 */
+.grid-wrap.d7{--time-w:36px}
+.grid-wrap.d7 .th{font-size:11px;padding:6px 1px}
+.grid-wrap.d7 .th .d{font-size:9px}
+.grid-wrap.d7 .grid-head .th-time{font-size:9.5px}
+.grid-wrap.d7 .time-slot .n{font-size:10.5px}
+.grid-wrap.d7 .time-slot .t{font-size:7.5px}
+.grid-wrap.d7 .time-slot .bell{font-size:7px}
+.grid-wrap.d7 .cc{padding:3px 2px;border-radius:8px}
+.grid-wrap.d7 .cc .nm{font-size:9.5px;-webkit-line-clamp:5}
+.grid-wrap.d7 .cc .rm{font-size:8px;-webkit-line-clamp:2}
+.grid-wrap.d7 .cc .wk{display:none}
+.grid-wrap.d7 .cc .heart{font-size:7px;top:1px;right:2px}
 .time-col{position:relative;border-right:1px solid var(--line);background:#fffdfe}
 .time-slot{height:var(--row-h);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;border-bottom:1px dashed #f4e8ef}
 .time-slot .n{font-size:11.5px;font-weight:800;color:#a68e9c}
@@ -304,7 +317,16 @@ const ROWS = [
   { key:'11-12', label:'11-12', start:'20:10', end:'21:40' }
 ];
 const ROW_KEYS = ROWS.map(r => r.key);
-const DAYS = ['周一','周二','周三','周四','周五'];
+const DAYS = ['周一','周二','周三','周四','周五','周六','周日'];        // 周六日也可能有课
+const DAYS_SHORT = ['一','二','三','四','五','六','日'];
+// 显示几天：auto=有周末课就自动展开 7 天，否则 5 天
+function dayCount(){
+  const mode = state.settings.days || 'auto';
+  if(mode === '5') return 5;
+  if(mode === '7') return 7;
+  const hasWeekend = state.mine.some(c => Number(c.day) >= 6) || state.partner.some(c => Number(c.day) >= 6);
+  return hasWeekend ? 7 : 5;
+}
 // 节次序号(1~12) → 纵向行 key
 function nodeToRow(n){
   n = Number(n);
@@ -383,7 +405,7 @@ function weeksText(spec){
 function inWeek(course, week){ return expandWeeks(course.weeks).indexOf(Number(week)) >= 0; }
 
 /* ---------------- 4. 全局状态 ---------------- */
-const DEFAULT_SETTINGS = { maxWeek:20, termStart:'', myName:'我', partnerName:'TA' };
+const DEFAULT_SETTINGS = { maxWeek:20, termStart:'', myName:'我', partnerName:'TA', days:'auto' };
 let state = {
   mine:    LS.get('cs_mine', []),
   partner: LS.get('cs_partner', []),
@@ -407,7 +429,7 @@ function normalizeCourse(c, side){
     name: (c.name || '未命名课程').toString().slice(0, 40),
     teacher: (c.teacher || '').toString().slice(0, 30),
     room: (c.room || '').toString().slice(0, 30),
-    day: Math.min(5, Math.max(1, Number(c.day) || 1)),
+    day: Math.min(7, Math.max(1, Number(c.day) || 1)),
     start: ROW_KEYS.indexOf(c.start) >= 0 ? c.start : nodeToRow(c.start || 1),
     end:   ROW_KEYS.indexOf(c.end) >= 0 ? c.end : nodeToRow(c.end || c.start || 1),
     weeks: (c.weeks == null || c.weeks === '') ? '1-20' : String(c.weeks),
@@ -471,8 +493,7 @@ function renderLegend(){
     : '未配对 · 点下方「配对」';
 }
 // 计算某天的日期（若已设置开学日期）
-function dayDate(day){
-  if(!state.settings.termStart) return '';
+function dayDate(day){  if(!state.settings.termStart) return '';
   const base = new Date(state.settings.termStart + 'T00:00:00');
   if(isNaN(base.getTime())) return '';
   const d = new Date(base.getTime() + ((state.week - 1) * 7 + (day - 1)) * 86400000);
@@ -480,13 +501,18 @@ function dayDate(day){
 }
 function renderGrid(){
   const td = todayDay();
+  const dc = dayCount();                                   // 5 或 7 天
+  const wrap = $('.grid-wrap');
+  wrap.style.setProperty('--days', dc);
+  wrap.classList.toggle('d7', dc === 7);
   // 表头
   let head = '<div class="th-time">节次</div>';
-  DAYS.forEach((d, i) => {
-    const day = i + 1, dd = dayDate(day);
-    head += '<div class="th' + (day === td ? ' today' : '') + '">' + d +
+  for(let day = 1; day <= dc; day++){
+    const dd = dayDate(day);
+    const label = dc === 7 ? DAYS_SHORT[day - 1] : DAYS[day - 1];
+    head += '<div class="th' + (day === td ? ' today' : '') + '">' + label +
             (dd ? '<span class="d' + (day === td ? ' today-d' : '') + '">' + dd + '</span>' : '') + '</div>';
-  });
+  }
   $('#gridHead').innerHTML = head;
 
   // 左侧时间列
@@ -498,9 +524,9 @@ function renderGrid(){
   });
   timeCol += '</div>';
 
-  // 五天列 + 课程块
+  // 各天列 + 课程块
   let cols = '';
-  for(let day = 1; day <= 5; day++){
+  for(let day = 1; day <= dc; day++){
     cols += '<div class="day-col' + (day === td ? ' today' : '') + '" data-day="' + day + '">';
     for(let i = 0; i < ROWS.length; i++) cols += '<div class="slot-line" style="top:calc(' + i + ' * var(--row-h))"></div>';
     const list = [];
@@ -521,12 +547,11 @@ function renderGrid(){
 
   // 空态
   if(!state.mine.length && !state.partner.length){
-    const wrap = $('.grid-wrap');
     if(!$('#emptyTip')){
       const d = document.createElement('div');
       d.id = 'emptyTip'; d.className = 'empty-tip';
-      d.innerHTML = '还没有课程哦～<br>点击底部 <b>📥 导入</b> 上传江汉大学 .ics 文件或粘贴教务课表文本<br>也可以点 <b>➕ 添加</b> 手动录入<br><br>' +
-        '想让 TA 看到你的课？点 <b>🔄 同步</b> → <b>显示二维码</b>，<br>TA 扫一下就能把课表收进「情侣课表」';
+      d.innerHTML = '还没有课程哦～<br>点击底部 <b>📥 导入</b> 上传教务导出的 .xls 或 .ics 文件，也可以粘贴课表文本<br>还可以点 <b>➕ 添加</b> 手动录入<br><br>' +
+        '想让 TA 看到你的课？点 <b>🔄 同步</b> → <b>生成并复制同步包</b>，发微信给 TA 就行';
       wrap.appendChild(d);
     }
   } else {
@@ -643,8 +668,7 @@ function openCourseForm(side, course){
   const isEdit = !!course;
   const c = course ? clone(course) : { name:'', day:1, start:'1', end:'2', weeks:'1-16', room:'', teacher:'', note:'' };
   const rowOpts = sel => ROW_KEYS.map(k => '<option value="' + k + '"' + (sel === k ? ' selected' : '') + '>' + rowByKey(k).label + ' 节</option>').join('');
-  const dayOpts = DAYS.map((d, i) => '<option value="' + (i + 1) + '"' + (Number(c.day) === i + 1 ? ' selected' : '') + '>' + d + '</option>').join('');
-  const body =
+  const dayOpts = DAYS.map((d, i) => '<option value="' + (i + 1) + '"' + (Number(c.day) === i + 1 ? ' selected' : '') + '>' + d + '</option>').join('');  const body =
     '<div class="field"><label>课程名称 *</label><input id="fName" value="' + esc(c.name) + '" placeholder="如：高等数学A(1)"></div>' +
     '<div class="row2">' +
       '<div class="field"><label>星期</label><select id="fDay">' + dayOpts + '</select></div>' +
@@ -795,8 +819,7 @@ function parseICSWithIcal(text){
 // 统一的"事件 → 课程"转换
 function eventToCourse(ev){
   if(!ev || !ev.start) return null;
-  const day = ((ev.start.getDay() + 6) % 7) + 1;
-  if(day > 5) return null;                                  // 周末课程忽略
+  const day = ((ev.start.getDay() + 6) % 7) + 1;      // 1=周一 … 7=周日（周末课也保留）
   const end = ev.end || new Date(ev.start.getTime() + 45 * 60000);
   const startRow = rowByTime(ev.start);
   let endRow = rowByTime(end);
@@ -1014,7 +1037,6 @@ function parseScheduleHTML(htmlText){
         if(!day && headerMap) day = headerMap[c.cellIndex] || headerMap[c.cellIndex - 1] || headerMap[c.cellIndex + 1] || 0;
         extractCourseBlocks(lines).forEach(b => {
           if(!day){ out.skipped++; return; }
-          if(day > 5){ out.skippedWeekend++; return; }             // 周六/周日课程暂时放不下
           b.day = day;
           out.courses.push(b);
         });
@@ -1043,7 +1065,6 @@ function parseScheduleMatrix(rows){
       if((day < 1 || day > 7) && headerMap) day = headerMap[idx] || headerMap[idx - 1] || headerMap[idx + 1] || 0;
       extractCourseBlocks(lines).forEach(b => {
         if(!day){ out.skipped++; return; }
-        if(day > 5){ out.skippedWeekend++; return; }
         b.day = day;
         out.courses.push(b);
       });
@@ -2015,11 +2036,12 @@ async function ensureLib(name){
   return typeof window[name] !== 'undefined';
 }
 function collectGrid(which){
-  // 当前周的网格数据
+  // 当前周的网格数据（列数与课表显示一致：5 天或 7 天）
   const cells = [];
+  const dc = dayCount();
   ROWS.forEach((r, ri) => {
     const row = [r.label, r.start + '-' + r.end];
-    for(let day = 1; day <= 5; day++){
+    for(let day = 1; day <= dc; day++){
       const parts = [];
       const push = (arr, tag) => arr.forEach(c => {
         if(Number(c.day) === day && inWeek(c, state.week) && rowIndex(c.start) === ri){
@@ -2050,7 +2072,7 @@ function collectList(which){
 async function exportExcel(which){
   const titleMap = { mine:'我方课表', partner:'情侣课表', mixed:'双人混合课表' };
   const fileName = titleMap[which] + '-第' + state.week + '周-' + new Date().toISOString().slice(0, 10) + '.xlsx';
-  const head = [['节次', '上课时间'].concat(DAYS)];
+  const head = [['节次', '上课时间'].concat(DAYS.slice(0, dayCount()))];
   const gridAOA = [['江汉大学 · ' + titleMap[which] + '　第' + state.week + '周（' + (state.week % 2 ? '单周' : '双周') + '）　开学：' + (state.settings.termStart || '未设置')],
                    []].concat(head, collectGrid(which));
   const listAOA = [['归属', '课程名', '星期', '起止节次', '上课时间', '教室', '教师', '有效周次', '备注']]
@@ -2123,6 +2145,13 @@ function openSetting(){
         '<div class="field"><label>学期总周数</label><input id="sMax" type="number" min="1" max="40" value="' + esc(state.settings.maxWeek) + '"></div>' +
         '<div class="field"><label>第一周周一（开学日）</label><input id="sTerm" type="date" value="' + esc(state.settings.termStart) + '"></div>' +
       '</div>' +
+      '<div class="field"><label>课表显示范围</label>' +
+        '<select id="sDays">' +
+          '<option value="auto"' + ((state.settings.days || 'auto') === 'auto' ? ' selected' : '') + '>自动（有周六/周日的课就展开 7 天）</option>' +
+          '<option value="7"' + (state.settings.days === '7' ? ' selected' : '') + '>总是显示周一~周日（7 天）</option>' +
+          '<option value="5"' + (state.settings.days === '5' ? ' selected' : '') + '>只显示周一~周五（5 天）</option>' +
+        '</select>' +
+        '<div class="hint">7 天模式下列会变窄，点课程卡片可以看完整信息。</div></div>' +
       '<div class="tip">开学日期用于计算 .ics 里每节课属于第几周，以及表头显示日期。</div>' +
       '<div class="sec-title">数据管理（全部存本机）</div>' +
       '<button class="btn-line" id="stBackup">💾 导出备份 JSON</button>' +
@@ -2136,6 +2165,7 @@ function openSetting(){
         state.settings.partnerName = ($('#sTa', root).value || 'TA').trim();
         state.settings.maxWeek = Math.max(1, Math.min(40, Number($('#sMax', root).value) || 20));
         state.settings.termStart = $('#sTerm', root).value || '';
+        state.settings.days = $('#sDays', root).value || 'auto';
         save(); closeModal(); render(); toast('设置已保存');
       };
       $('#stBackup', root).onclick = () => {
@@ -2189,7 +2219,8 @@ function loadDemo(){
     { name:'大学物理', room:'J06-203', teacher:'王强', day:3, start:'1', end:'2', weeks:'1-16单' },
     { name:'程序设计基础', room:'J04-305', teacher:'刘洋', day:4, start:'5', end:'6', weeks:'1-16' },
     { name:'体育(羽毛球)', room:'体育馆', teacher:'陈刚', day:5, start:'3', end:'4', weeks:'1-16' },
-    { name:'思想道德与法治', room:'J02-401', teacher:'赵敏', day:5, start:'9-10', end:'11-12', weeks:'1-12' }
+    { name:'思想道德与法治', room:'J02-401', teacher:'赵敏', day:5, start:'9-10', end:'11-12', weeks:'1-12' },
+    { name:'形势与政策(周末)', room:'J05A108', teacher:'毛文君', day:7, start:'9-10', end:'11-12', weeks:'13' }
   ].map(c => normalizeCourse(c, 'mine'));
   state.partner = [
     { name:'线性代数', room:'J06-105', teacher:'孙丽', day:1, start:'3', end:'4', weeks:'1-16' },
