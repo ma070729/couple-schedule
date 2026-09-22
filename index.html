@@ -926,7 +926,161 @@ function parsePasteText(text){
   return result;
 }
 
-/* ---------------- 10. 导入流程（ICS / 文本 / 预览确认） ---------------- */
+/* ---------------- 9.5 教务导出的"表格"课表解析 ----------------
+ * 江汉大学等教务系统导出的 .xls 其实是「HTML 表格 + GBK 编码」的假 Excel，
+ * 单元格结构为 4 行一组：课程名 / 教师 / 周次[节次] / 教室，且 <td> 上带 id="kXY"（X=星期，Y=节次块）。
+ * 这里同时支持：真 .xls/.xlsx（走 SheetJS）、HTML 假 Excel、以及 .ics。
+ * ------------------------------------------------------------------ */
+// 锚点：周次[节次]，周次支持 1-16 / 1-4,6-13 / 4,6-11 / 16 等写法
+const WEEK_NODE_RE = /^((?:\d{1,2}(?:\s*[-~—－至]\s*\d{1,2})?)(?:\s*[,，、]\s*\d{1,2}(?:\s*[-~—－至]\s*\d{1,2})?)*)\s*[\[【(]\s*(\d{1,2})\s*(?:[-~—－至]\s*(\d{1,2}))?\s*[\]】)]/;
+
+// 按编码自动解码（优先文件里声明的 charset，其次 UTF-8，最后按 GBK 兜底）
+function decodeBytes(u8){
+  const head = new TextDecoder('utf-8').decode(u8.slice(0, 4096));
+  const m = head.match(/charset\s*=\s*["']?\s*([\w-]+)/i);
+  const list = [];
+  if(m){
+    const cs = m[1].toLowerCase();
+    list.push(cs === 'gb2312' || cs === 'gb2312-80' ? 'gbk' : cs);
+  }
+  list.push('utf-8', 'gbk', 'gb18030');
+  for(const enc of list){
+    try{
+      const t = new TextDecoder(enc).decode(u8);
+      if(t.indexOf('\uFFFD') < 0) return t;
+    }catch(e){ /* 不支持的编码，换下一个 */ }
+  }
+  return new TextDecoder('utf-8').decode(u8);
+}
+// 单元格 → 文本行（<br> 与块级标签都当作换行）
+function cellLines(cell){
+  const clone = cell.cloneNode(true);
+  Array.prototype.forEach.call(clone.querySelectorAll('br'), br => br.replaceWith('\n'));
+  Array.prototype.forEach.call(clone.querySelectorAll('div,p,font,span,li'), el => el.appendChild(document.createTextNode('\n')));
+  return (clone.textContent || '').split('\n').map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
+}
+// 从一组文本行里按"周次[节次]"锚点抽出所有课程块（一个格子里可能并排多门课）
+function extractCourseBlocks(lines){
+  const res = [];
+  for(let i = 0; i < lines.length; i++){
+    const m = lines[i].match(WEEK_NODE_RE);
+    if(!m) continue;
+    const name = (lines[i - 2] || lines[i - 1] || '未命名课程').trim();
+    let teacher = (lines[i - 1] || '').trim();
+    if(teacher === name) teacher = '';
+    let room = (lines[i + 1] || '').trim();
+    if(WEEK_NODE_RE.test(room) || room === name) room = '';
+    room = room.replace(/[☆★*※✿]+$/g, '').replace(/[（(]\s*\d+\s*[)）]\s*$/, '').trim();
+    const s = +m[2], e = m[3] ? +m[3] : +m[2];
+    res.push({
+      name: name, teacher: teacher, room: room,
+      weeks: m[1].replace(/[，、]/g, ',').replace(/\s/g, ''),
+      s: s, e: Math.max(s, e)
+    });
+  }
+  return res;
+}
+// 解析 HTML 版教学安排表
+function parseScheduleHTML(htmlText){
+  const doc = new DOMParser().parseFromString(htmlText, 'text/html');
+  const out = { courses: [], student: '', skippedWeekend: 0, skipped: 0 };
+  const nm = htmlText.match(/姓名[：:]\s*([^\s<>]{1,12})/);
+  if(nm) out.student = nm[1];
+  const tables = Array.prototype.slice.call(doc.querySelectorAll('table'));
+  tables.forEach(table => {
+    const rows = Array.prototype.slice.call(table.rows || []);
+    if(!rows.length || rows.length > 60) return;                 // 跳过超大的说明表
+    let headerMap = null;
+    for(const r of rows){                                        // 找表头（含"星期一"等）
+      const map = {}; let hit = 0;
+      Array.prototype.forEach.call(r.cells, c => {
+        const t = (c.textContent || '').replace(/\s+/g, '');
+        const m = t.match(/^(?:星期|周|礼拜)([一二三四五六日天])$/);
+        if(m){ map[c.cellIndex] = DAY_MAP[m[1]]; hit++; }
+      });
+      if(hit >= 3){ headerMap = map; break; }
+    }
+    rows.forEach(r => {
+      const cellCount = r.cells.length;
+      Array.prototype.forEach.call(r.cells, c => {
+        const lines = cellLines(c);
+        if(!lines.length || !lines.some(l => WEEK_NODE_RE.test(l))) return;
+        // 星期判定：优先单元格 id="kXY"，其次按"行内列数"对齐星期表头，最后用表头映射
+        let day = 0;
+        const idEl = c.querySelector('[id]');
+        const kid = idEl ? /^k([1-7])\d+$/.exec(idEl.id) : null;
+        if(kid) day = +kid[1];
+        else if(cellCount >= 8) day = c.cellIndex - cellCount + 8;
+        if(!day && headerMap) day = headerMap[c.cellIndex] || headerMap[c.cellIndex - 1] || headerMap[c.cellIndex + 1] || 0;
+        extractCourseBlocks(lines).forEach(b => {
+          if(!day){ out.skipped++; return; }
+          if(day > 5){ out.skippedWeekend++; return; }             // 周六/周日课程暂时放不下
+          b.day = day;
+          out.courses.push(b);
+        });
+      });
+    });
+  });
+  return out;
+}
+// 解析真 Excel（SheetJS 读出的二维数组），布局规则同上
+function parseScheduleMatrix(rows){
+  const out = { courses: [], skippedWeekend: 0, skipped: 0 };
+  let headerMap = null;
+  rows.forEach(r => {
+    const map = {}; let hit = 0;
+    r.forEach((v, idx) => {
+      const t = String(v == null ? '' : v).replace(/\s+/g, '');
+      const m = t.match(/^(?:星期|周|礼拜)([一二三四五六日天])$/);
+      if(m){ map[idx] = DAY_MAP[m[1]]; hit++; }
+    });
+    if(hit >= 3 && !headerMap){ headerMap = map; return; }
+    r.forEach((v, idx) => {
+      const lines = String(v == null ? '' : v).split('\n').map(s => s.trim()).filter(Boolean);
+      if(!lines.length || !lines.some(l => WEEK_NODE_RE.test(l))) return;
+      const cellCount = r.length;
+      let day = cellCount >= 8 ? idx - cellCount + 8 : 0;
+      if((day < 1 || day > 7) && headerMap) day = headerMap[idx] || headerMap[idx - 1] || headerMap[idx + 1] || 0;
+      extractCourseBlocks(lines).forEach(b => {
+        if(!day){ out.skipped++; return; }
+        if(day > 5){ out.skippedWeekend++; return; }
+        b.day = day;
+        out.courses.push(b);
+      });
+    });
+  });
+  return out;
+}
+// 统一入口：不管拖进来的是 .ics / 假 Excel(.xls) / 真 Excel(.xlsx)，都走这里
+async function readScheduleFile(file){
+  const buf = await file.arrayBuffer();
+  const u8 = new Uint8Array(buf);
+  const isZip = u8[0] === 0x50 && u8[1] === 0x4B;        // xlsx
+  const isOle = u8[0] === 0xD0 && u8[1] === 0xCF;        // 真 xls
+  if(isZip || isOle){
+    if(!await ensureLib('XLSX')) throw new Error('需要联网加载 Excel 解析库，请检查网络后重试');
+    const wb = XLSX.read(buf, { type:'array' });
+    const rows = [];
+    wb.SheetNames.forEach(n => {
+      const m = XLSX.utils.sheet_to_json(wb.Sheets[n], { header:1, raw:false, defval:'' });
+      let w = 0;
+      m.forEach(r => { w = Math.max(w, r.length); });
+      m.forEach(r => { const rr = r.slice(); while(rr.length < w) rr.push(''); rows.push(rr); });
+      rows.push([]);
+    });
+    const r = parseScheduleMatrix(rows);
+    return { kind:'excel', courses:r.courses, skippedWeekend:r.skippedWeekend };
+  }
+  const text = decodeBytes(u8);
+  if(/BEGIN:VCALENDAR/i.test(text)) return { kind:'ics', raw:text };
+  const html = parseScheduleHTML(text);
+  if(html.courses.length){
+    return { kind:'html', courses:html.courses, student:html.student, skippedWeekend:html.skippedWeekend };
+  }
+  return { kind:'unknown', raw:text };
+}
+
+/* ---------------- 10. 导入流程（文件 / 文本 / 预览确认） ---------------- */
 function openImport(){
   const body =
     '<div class="tabs" id="impTabs">' +
@@ -945,11 +1099,13 @@ function openImport(){
           $('#impBody', root).innerHTML =
             '<div class="field"><label>导入到哪一侧课表</label><select id="impSide">' +
               '<option value="mine">我方课表</option><option value="partner">情侣课表</option></select></div>' +
-            '<div class="field"><label>江汉大学 .ics 文件</label><input type="file" id="impFile" accept=".ics,text/calendar"></div>' +
-            '<div class="field"><label>学期第一周周一（用于计算周次）</label><input type="date" id="impTerm" value="' + esc(state.settings.termStart) + '">' +
-              '<div class="hint">留空则自动采用文件中最早一节课所在周的周一。</div></div>' +
+            '<div class="field"><label>选择教务导出文件</label>' +
+              '<input type="file" id="impFile" accept=".ics,.xls,.xlsx,.html,.htm,.csv,text/calendar,application/vnd.ms-excel"></div>' +
+            '<div class="field"><label>学期第一周周一（仅 .ics 需要，用于计算周次）</label><input type="date" id="impTerm" value="' + esc(state.settings.termStart) + '">' +
+              '<div class="hint">教务表格自带周次，不用填；留空时 .ics 会自动采用最早一节课所在周的周一。</div></div>' +
             '<button class="btn-line" id="impGo">解析文件</button>' +
-            '<div class="tip">支持标准 iCalendar：SUMMARY(课程名)、LOCATION(教室)、DESCRIPTION(教师)、RRULE 中的 COUNT/UNTIL 与 EXDATE 停课。</div>';
+            '<div class="tip">支持：教务系统导出的「教学安排表 .xls」（其实是 HTML 表格）、真 .xlsx/.xls、标准 .ics 日历。<br>' +
+              '会自动读出「课程名 / 教师 / 周次 / 节次 / 教室」并跳过周六周日的课。</div>';
         } else if(t === 'text'){
           $('#impBody', root).innerHTML =
             '<div class="field"><label>导入到哪一侧课表</label><select id="impSide">' +
@@ -998,45 +1154,69 @@ function openImport(){
     }
   });
 }
-function handleImport(type, root){
+async function handleImport(type, root){
   const side = ($('#impSide', root) || {}).value || 'mine';
   const term = ($('#impTerm', root) || {}).value || '';
   if(term !== state.settings.termStart){ state.settings.termStart = term; save(); }
   if(type === 'ics'){
     const f = ($('#impFile', root) || {}).files;
-    if(!f || !f[0]){ toast('请先选择 .ics 文件'); return; }
-    const reader = new FileReader();
-    reader.onload = async () => {
-      let res;
-      try{ res = parseICS(reader.result); }
-      catch(e){ console.error(e); toast('解析失败：' + e.message); return; }
-      if(!res.courses.length && await ensureLib('ICAL')){        // 内置解析器读不出 → 按需加载 ical.js 再试一次
-        try{ res = parseICS(reader.result); }catch(e){}
-      }
-      if(!res.courses.length){ toast('没有解析到有效课程，请检查文件格式'); return; }
-      if(!state.settings.termStart && res.termStart){ state.settings.termStart = res.termStart; save(); }
-      openImportPreview(res.courses, side, 'ICS 文件');
-    };
-    reader.readAsText(f[0], 'utf-8');
-  } else {
-    const txt = ($('#impText', root) || {}).value || '';
-    if(!txt.trim()){ toast('请先粘贴课表文本'); return; }
-    const list = parsePasteText(txt);
-    if(!list.length){ toast('没有解析到课程，请检查文本格式'); return; }
-    openImportPreview(list, side, '粘贴文本');
+    if(!f || !f[0]){ toast('请先选择文件'); return; }
+    let res;
+    try{ res = await readScheduleFile(f[0]); }
+    catch(e){ console.error(e); toast('解析失败：' + e.message); return; }
+    // ① 标准日历
+    if(res.kind === 'ics'){
+      let ics = parseICS(res.raw);
+      if(!ics.courses.length && await ensureLib('ICAL')) ics = parseICS(res.raw);   // 内置解析不出 → 按需加载 ical.js 再试
+      if(!ics.courses.length){ toast('没有解析到有效课程，请检查文件格式'); return; }
+      if(!state.settings.termStart && ics.termStart){ state.settings.termStart = ics.termStart; save(); }
+      openImportPreview(ics.courses, side, 'ICS 日历文件');
+      return;
+    }
+    // ② 教务导出的表格（假 Excel / 真 Excel）
+    if(res.kind === 'html' || res.kind === 'excel'){
+      const list = dedupeCourses(res.courses.map(c => fixRange(normalizeCourse({
+        name: c.name, teacher: c.teacher, room: c.room, day: c.day,
+        start: nodeToRow(c.s), end: nodeToRow(c.e), weeks: c.weeks
+      }, side))));
+      if(!list.length){ toast('没解析到课程，可能不是课表文件'); return; }
+      openImportPreview(list, side, res.kind === 'html' ? '教务导出的教学安排表' : 'Excel 课表', res);
+      return;
+    }
+    toast('没认出这个文件格式，请用教务导出的 .xls 或 .ics');
+    return;
   }
+  const txt = ($('#impText', root) || {}).value || '';
+  if(!txt.trim()){ toast('请先粘贴课表文本'); return; }
+  const list = parsePasteText(txt);
+  if(!list.length){ toast('没有解析到课程，请检查文本格式'); return; }
+  openImportPreview(list, side, '粘贴文本');
+}
+// 同一门课（内容一致）只保留一条
+function dedupeCourses(list){
+  const seen = {}, out = [];
+  list.forEach(c => {
+    const k = [c.name, c.day, c.start, c.end, c.weeks, c.room].join('|');
+    if(seen[k]) return;
+    seen[k] = 1; out.push(c);
+  });
+  return out;
 }
 // 导入预览：确认后追加或覆盖
-function openImportPreview(list, side, from){
+function openImportPreview(list, side, from, meta){
   const rows = list.map(c =>
     '<div class="preview-item"><span class="side ' + side + '">' + (side === 'mine' ? '我' : 'TA') + '</span>' +
     '<span><b>' + esc(c.name) + '</b><br><span style="color:#a9939f">' +
     DAYS[c.day - 1] + ' ' + nodeText(c) + ' · ' + esc(c.weeks) + '周 · ' + esc(c.room || '无教室') +
     (c.teacher ? ' · ' + esc(c.teacher) : '') + '</span></span></div>').join('');
+  const extra = [];
+  if(meta && meta.student) extra.push('识别到：' + esc(meta.student));
+  if(meta && meta.skippedWeekend) extra.push('已忽略周六/周日课程 ' + meta.skippedWeekend + ' 门');
+  if(state.settings.termStart) extra.push('开学：' + esc(state.settings.termStart));
   openModal({
     title:'解析结果（' + list.length + ' 门）',
     body:'<div class="tip" style="margin:0 0 8px">来源：' + from + ' → 导入到「' + sideName(side) + '」课表' +
-         (state.settings.termStart ? '　开学：' + esc(state.settings.termStart) : '') + '</div>' +
+         (extra.length ? '<br>' + extra.join('　') : '') + '</div>' +
          '<div class="preview-list">' + rows + '</div>',
     footer:'<button class="btn ghost" data-close>取消</button>' +
            '<button class="btn ghost" id="pAppend">追加导入</button>' +

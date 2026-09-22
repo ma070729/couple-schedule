@@ -4,3 +4,6 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+_selftest/real-schedule.*
+_selftest/*.xls
+_selftest/*.xlsx

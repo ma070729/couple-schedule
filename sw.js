@@ -1,5 +1,5 @@
 /* 情侣课表 Service Worker：静态资源预缓存 + 离线可用（纯前端，无后端） */
-const CACHE = 'couple-schedule-v2';
+const CACHE = 'couple-schedule-v3';
 const ASSETS = [
   './',
   './index.html',

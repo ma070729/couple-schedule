@@ -17,7 +17,7 @@ let code = blocks[blocks.length - 1];
 // 截掉 DOM 绑定与启动部分（第 14 节之后）
 const cut = code.indexOf('/* ---------------- 14.');
 if (cut < 0) throw new Error('没有找到第 14 节标记');
-code = code.slice(0, cut) + '\nreturn { parsePasteText, parseICS, expandWeeks, weeksToSpec, normalizeCourse, diffCourses, planMerge, applyMerge, snapshotSig, courseSig, QR, state, rowByKey, nodeToRow, termStartMonday, shortCode, makePairCode };\n';
+code = code.slice(0, cut) + '\nreturn { parsePasteText, parseICS, expandWeeks, weeksToSpec, normalizeCourse, diffCourses, planMerge, applyMerge, snapshotSig, courseSig, extractCourseBlocks, WEEK_NODE_RE, QR, state, rowByKey, nodeToRow, termStartMonday, shortCode, makePairCode };\n';
 
 // 浏览器环境的极简桩
 const store = new Map();
@@ -194,6 +194,29 @@ eq('定位图形左上角为黑', qr.get(0, 0) === true, true);
 eq('分隔符为白', qr.get(7, 7) === false, true);
 eq('定时图形交替', qr.get(8, 6) === true && qr.get(9, 6) === false, true);
 eq('固定暗模块', qr.get(8, qr.size - 8) === true, true);
+
+console.log('\n[10] 教务表格解析：周次[节次] 锚点（真实 .xls 结构）');
+const ex1 = api.extractCourseBlocks(['实用数值方法', '冯艳华', '4,6-11[1-2]', 'J33B102']);
+eq('单门课-数量', ex1.length, 1);
+eq('单门课-周次(逗号开头)', ex1[0].weeks, '4,6-11');
+eq('单门课-节次', [ex1[0].s, ex1[0].e], [1, 2]);
+eq('单门课-教室', ex1[0].room, 'J33B102');
+eq('单门课-教师', ex1[0].teacher, '冯艳华');
+const ex2 = api.extractCourseBlocks(['概率论与数理统计（理）', '赵维胜', '1-4,6-13[3-4]', 'J33B104']);
+eq('周次以区间开头 1-4,6-13', ex2[0].weeks, '1-4,6-13');
+const ex3 = api.extractCourseBlocks(['电工学1', '王少愚', '16[1-4]', 'J07-101☆']);
+eq('单周 16 + 连堂 1-4', [ex3[0].weeks, ex3[0].s, ex3[0].e], ['16', 1, 4]);
+eq('教室末尾符号被清理', ex3[0].room, 'J07-101');
+const ex4 = api.extractCourseBlocks(['形势与政策3', '毛文君', '13[9-12]', 'J05A108']);
+eq('9-12 节 → 跨 9-10 与 11-12', [ex4[0].s, ex4[0].e], [9, 12]);
+eq('9-12 起始行', api.nodeToRow(ex4[0].s) + '~' + api.nodeToRow(ex4[0].e), '9-10~11-12');
+const ex5 = api.extractCourseBlocks(['大学物理', '王强', '1-4,6-9[1-2]', 'J05A301', '电工学1', '王少愚', '16[1-4]', 'J07-103']);
+eq('一格两门课', ex5.map(c => c.name), ['大学物理', '电工学1']);
+eq('第二门教室', ex5[1].room, 'J07-103');
+const ex6 = api.extractCourseBlocks(['体育专项Ⅰ', '陈跃坤', '1-4,6-17[9-10]', '小球馆二楼羽毛球室-2']);
+eq('中文教室', ex6[0].room, '小球馆二楼羽毛球室-2');
+eq('无锚点行不产生课程', api.extractCourseBlocks(['上午', '一', '中午']).length, 0);
+eq('锚点正则不吃"第1-2节"式无周次文本', api.WEEK_NODE_RE.test('第1-2节'), false);
 
 console.log('\n结果：通过 ' + pass + ' 项，失败 ' + fail + ' 项\n');
 process.exit(fail ? 1 : 0);
