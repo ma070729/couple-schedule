@@ -1,0 +1,6 @@
+# 只保留源码与自检脚本，截图等本地产物不入库
+_selftest/*.png
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
